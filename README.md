@@ -57,6 +57,8 @@ from `moreSwift/swift-bundler`.
     executable: ${{ github.workspace }}\.build\release\hello.exe
 ```
 
-## License
 
-Apache-2.0. See [LICENSE](./LICENSE).
+## Credits
+
+The logic is inspired by [SwiftBundler](https://github.com/moreSwift/swift-bundler/)'s [GenericWindowsBundler.swift](https://github.com/moreSwift/swift-bundler/blob/main/Sources/SwiftBundler/Bundler/GenericWindowsBundler.swift). Thanks for all the work!
+
