@@ -1,0 +1,105 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-bundle:
+    name: Build & bundle on ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: windows-x64
+          - os: windows-11-arm
+            target: windows-arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Swift
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: "6.3.1"
+
+      - name: Enter Visual Studio Developer environment
+        uses: compnerd/gha-setup-vsdevenv@main
+
+      - name: Build sample
+        working-directory: examples/hello
+        shell: pwsh
+        run: swift build -c release --product hello
+
+      - name: Stage executable
+        id: stage
+        working-directory: examples/hello
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = (swift build -c release --product hello --show-bin-path).Trim()
+          $dist = Join-Path $env:RUNNER_TEMP "bundle-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item -Force (Join-Path $bin "hello.exe") $dist
+          "dist=$dist" >> $env:GITHUB_OUTPUT
+          "exe=$(Join-Path $dist 'hello.exe')" >> $env:GITHUB_OUTPUT
+
+      - name: Bundle DLLs
+        uses: ./
+        with:
+          executable: ${{ steps.stage.outputs.exe }}
+
+      - name: List bundle contents
+        shell: pwsh
+        run: Get-ChildItem -LiteralPath "${{ steps.stage.outputs.dist }}" | Format-Table Name,Length
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          path: ${{ steps.stage.outputs.dist }}
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    name: Verify bundle on ${{ matrix.target }}
+    needs: build-and-bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: windows-x64
+          - os: windows-11-arm
+            target: windows-arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Download bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          path: ${{ runner.temp }}/bundle
+
+      - name: List bundle contents
+        shell: pwsh
+        run: Get-ChildItem -LiteralPath "${{ runner.temp }}/bundle" | Format-Table Name,Length
+
+      - name: Run executable in a Swift-free environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Sanitize PATH to system directories only, so any Swift / MSVC
+          # runtime the executable depends on must come from the bundle.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          $swift = Get-Command swift -ErrorAction SilentlyContinue
+          if ($swift) {
+            Write-Error "'swift' is still on PATH after sanitization: $($swift.Source)"
+            exit 1
+          }
+          & "${{ runner.temp }}/bundle/hello.exe"
