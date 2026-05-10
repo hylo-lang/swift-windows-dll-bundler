@@ -81,7 +81,7 @@ function Resolve-Dll {
 
 # Returns the list of DLL names imported by $Module, parsed from
 # `llvm-readobj --coff-imports`. Throws on any unexpected output.
-function Get-DllDependencies {
+function Get-DllDependency {
     param([Parameter(Mandatory)][string]$Module)
 
     $stderrFile = New-TemporaryFile
@@ -122,7 +122,7 @@ function Get-DllDependencies {
 function Copy-DllDependencyClosure {
     param([Parameter(Mandatory)][string]$Module)
 
-    foreach ($dep in (Get-DllDependencies -Module $Module)) {
+    foreach ($dep in (Get-DllDependency -Module $Module)) {
         if (-not $visited.Add($dep)) { continue }
 
         $source = Resolve-Dll -Name $dep
