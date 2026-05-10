@@ -2,10 +2,10 @@ name: Copy Windows DLL dependencies
 description: >
   Recursively resolves and copies all DLLs required to run a given Windows
   executable into the same directory as the executable. Dependencies are
-  discovered via `dumpbin /DEPENDENTS`. DLLs that are products of the build
-  itself (i.e. already sitting next to the executable) are kept; other
-  dependencies are copied only when they are on a built-in allow-list of
-  Swift / Foundation / libdispatch / MSVC runtime DLLs. The remaining
+  discovered via `llvm-readobj --coff-imports`. DLLs that are products of
+  the build itself (i.e. already sitting next to the executable) are kept;
+  other dependencies are copied only when they are on a built-in allow-list
+  of Swift / Foundation / libdispatch / MSVC runtime DLLs. The remaining
   (Windows system) DLLs are ignored. An allow-listed DLL that cannot be
   located on `PATH` is treated as an error.
 
@@ -20,12 +20,12 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Ensure dumpbin is available
+    - name: Ensure llvm-readobj is available
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
-        if (-not (Get-Command dumpbin -ErrorAction SilentlyContinue)) {
-          Write-Error "dumpbin was not found on PATH. Run inside a Visual Studio Developer environment (e.g. via compnerd/gha-setup-vsdevenv)."
+        if (-not (Get-Command llvm-readobj -ErrorAction SilentlyContinue)) {
+          Write-Error "llvm-readobj was not found on PATH. It ships with the Swift toolchain on Windows; ensure the toolchain's bin directory is on PATH."
           exit 1
         }
 
@@ -33,106 +33,4 @@ runs:
       shell: pwsh
       env:
         INPUT_EXECUTABLE: ${{ inputs.executable }}
-      run: |
-        $ErrorActionPreference = 'Stop'
-
-        $exePath = $env:INPUT_EXECUTABLE
-        if ([string]::IsNullOrWhiteSpace($exePath)) {
-          throw "Input 'executable' is required."
-        }
-        if (-not (Test-Path -LiteralPath $exePath)) {
-          throw "Executable not found: $exePath"
-        }
-        $bundleDir = (Resolve-Path -LiteralPath (Get-Item -LiteralPath $exePath).DirectoryName).Path
-
-        # Allow-listed DLL base-names (lowercase, with `.dll`). Mirrors
-        # swift-bundler's GenericWindowsBundler: Swift runtime, Foundation,
-        # libdispatch, and MSVC runtime.
-        $allowList = @{}
-        @(
-          'swiftCore','swiftCRT','swiftDispatch','swiftDistributed',
-          'swiftObservation','swiftRegexBuilder','swiftRemoteMirror',
-          'swiftSwiftOnoneSupport','swiftSynchronization','swiftWinSDK',
-          'Foundation','FoundationXML','FoundationNetworking',
-          'FoundationEssentials','FoundationInternationalization',
-          'BlocksRuntime','_FoundationICU','_InternalSwiftScan',
-          '_InternalSwiftStaticMirror','swift_Concurrency','swift_RegexParser',
-          'swift_StringProcessing','swift_Differentiation',
-          'concrt140','msvcp140','msvcp140_1','msvcp140_2',
-          'msvcp140_atomic_wait','msvcp140_codecvt_ids',
-          'vccorlib140','vcruntime140','vcruntime140_1','vcruntime140_threads',
-          'dispatch'
-        ) | ForEach-Object { $allowList["$($_.ToLowerInvariant()).dll"] = $true }
-
-        $pathDirs = ($env:Path -split ';') | Where-Object { $_ -ne '' }
-        $visited = @{}
-
-        # Returns the source path to bundle for a DLL named $Name, or $null
-        # when the DLL is a Windows system DLL we deliberately ignore.
-        # Throws when an allow-listed DLL cannot be located on PATH.
-        function Resolve-Dll {
-          param([string]$Name)
-
-          # A DLL sitting next to the executable is a build product and is
-          # always bundled (it is already in the right place).
-          $local = Join-Path $bundleDir $Name
-          if (Test-Path -LiteralPath $local) { return $local }
-
-          if (-not $allowList.ContainsKey($Name.ToLowerInvariant())) {
-            return $null
-          }
-
-          foreach ($dir in $pathDirs) {
-            $candidate = Join-Path $dir $Name
-            if (Test-Path -LiteralPath $candidate) { return $candidate }
-          }
-
-          throw "Could not locate allow-listed DLL '$Name' on PATH."
-        }
-
-        # Returns the list of DLL names imported by $Module.
-        function Get-DllDependencies {
-          param([string]$Module)
-
-          $output = & dumpbin /DEPENDENTS $Module 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            throw "dumpbin failed for '$Module' (exit $LASTEXITCODE):`n$output"
-          }
-          $lines = ($output | Out-String) -split "`r?`n"
-          $start = $lines.IndexOf('  Image has the following dependencies:') + 2
-          if ($start -le 1) {
-            throw "Could not find dependency section in dumpbin output for '$Module'."
-          }
-          $end = $start
-          while ($end -lt $lines.Length -and $lines[$end].Trim() -ne '') { $end++ }
-          return @($lines[$start..($end - 1)] | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-        }
-
-        function Bundle-Recursively {
-          param([string]$Module)
-
-          foreach ($dep in (Get-DllDependencies -Module $Module)) {
-            $key = $dep.ToLowerInvariant()
-            if ($visited.ContainsKey($key)) { continue }
-            $visited[$key] = $true
-
-            $source = Resolve-Dll -Name $dep
-            if ($null -eq $source) { continue }
-
-            $dest = Join-Path $bundleDir ([System.IO.Path]::GetFileName($source))
-            if ($source -ine $dest) {
-              Write-Host "Copying $source"
-              Copy-Item -LiteralPath $source -Destination $dest -Force
-              $pdb = [System.IO.Path]::ChangeExtension($source, 'pdb')
-              if (Test-Path -LiteralPath $pdb) {
-                Copy-Item -LiteralPath $pdb -Destination ([System.IO.Path]::ChangeExtension($dest, 'pdb')) -Force
-              }
-            }
-
-            Bundle-Recursively -Module $dest
-          }
-        }
-
-        Write-Host "Bundling DLLs for $exePath into $bundleDir"
-        Bundle-Recursively -Module $exePath
-        Write-Host "Done. Visited $($visited.Count) unique DLL reference(s)."
+      run: ${{ github.action_path }}/scripts/Bundle-Dlls.ps1 -Executable $env:INPUT_EXECUTABLE
