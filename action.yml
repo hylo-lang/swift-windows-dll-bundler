@@ -1,11 +1,13 @@
 name: Copy Windows DLL dependencies
 description: >
-  Resolves and copies all DLLs required to run a given Windows executable into
-  the same directory as the executable. Discovers dependencies recursively via
-  `dumpbin /DEPENDENTS`. DLLs that are products of the SwiftPM build (i.e.
-  located next to the executable) are always copied. Other DLLs are only copied
-  if they are on a known allow-list of Swift / Foundation / MSVC runtime
-  libraries; system DLLs that ship with Windows are deliberately ignored.
+  Recursively resolves and copies all DLLs required to run a given Windows
+  executable into the same directory as the executable. Dependencies are
+  discovered via `dumpbin /DEPENDENTS`. DLLs that are products of the build
+  itself (i.e. already sitting next to the executable) are kept; other
+  dependencies are copied only when they are on a built-in allow-list of
+  Swift / Foundation / libdispatch / MSVC runtime DLLs. The remaining
+  (Windows system) DLLs are ignored. An allow-listed DLL that cannot be
+  located on `PATH` is treated as an error.
 
   Logic adapted from
   https://github.com/moreSwift/swift-bundler `GenericWindowsBundler.swift`.
@@ -14,27 +16,6 @@ inputs:
   executable:
     description: Absolute path to the Windows .exe whose DLL dependencies should be bundled.
     required: true
-  destination:
-    description: >
-      Directory into which the DLLs should be copied. Defaults to the directory
-      containing the executable.
-    required: false
-    default: ""
-  extra-allowlist:
-    description: >
-      Newline- or comma-separated list of additional DLL base-names (without the
-      `.dll` suffix, case-insensitive) to allow copying from the system PATH in
-      addition to the built-in Swift/MSVC runtime allow-list.
-    required: false
-    default: ""
-  fail-on-unresolved:
-    description: >
-      If `true`, the action fails when an allow-listed DLL cannot be located on
-      PATH. If `false`, missing allow-listed DLLs are merely warned about. DLLs
-      that are not on the allow-list are always silently skipped (treated as
-      system DLLs).
-    required: false
-    default: "true"
 
 runs:
   using: composite
@@ -52,9 +33,6 @@ runs:
       shell: pwsh
       env:
         INPUT_EXECUTABLE: ${{ inputs.executable }}
-        INPUT_DESTINATION: ${{ inputs.destination }}
-        INPUT_EXTRA_ALLOWLIST: ${{ inputs.extra-allowlist }}
-        INPUT_FAIL_ON_UNRESOLVED: ${{ inputs.fail-on-unresolved }}
       run: |
         $ErrorActionPreference = 'Stop'
 
@@ -65,23 +43,13 @@ runs:
         if (-not (Test-Path -LiteralPath $exePath)) {
           throw "Executable not found: $exePath"
         }
-        $exeItem = Get-Item -LiteralPath $exePath
-        $productsDirectory = (Resolve-Path -LiteralPath $exeItem.DirectoryName).Path
+        $bundleDir = (Resolve-Path -LiteralPath (Get-Item -LiteralPath $exePath).DirectoryName).Path
 
-        $destination = $env:INPUT_DESTINATION
-        if ([string]::IsNullOrWhiteSpace($destination)) {
-          $destination = $productsDirectory
-        }
-        if (-not (Test-Path -LiteralPath $destination)) {
-          New-Item -ItemType Directory -Force -Path $destination | Out-Null
-        }
-        $destination = (Resolve-Path -LiteralPath $destination).Path
-
-        $failOnUnresolved = ($env:INPUT_FAIL_ON_UNRESOLVED -ieq 'true')
-
-        # Built-in allow-list: Swift runtime, Foundation, libdispatch, MSVC
-        # runtime. Mirrors swift-bundler's GenericWindowsBundler.
-        $builtinAllowList = @(
+        # Allow-listed DLL base-names (lowercase, with `.dll`). Mirrors
+        # swift-bundler's GenericWindowsBundler: Swift runtime, Foundation,
+        # libdispatch, and MSVC runtime.
+        $allowList = @{}
+        @(
           'swiftCore','swiftCRT','swiftDispatch','swiftDistributed',
           'swiftObservation','swiftRegexBuilder','swiftRemoteMirror',
           'swiftSwiftOnoneSupport','swiftSynchronization','swiftWinSDK',
@@ -94,65 +62,35 @@ runs:
           'msvcp140_atomic_wait','msvcp140_codecvt_ids',
           'vccorlib140','vcruntime140','vcruntime140_1','vcruntime140_threads',
           'dispatch'
-        )
+        ) | ForEach-Object { $allowList["$($_.ToLowerInvariant()).dll"] = $true }
 
-        $extraTokens = @()
-        if (-not [string]::IsNullOrWhiteSpace($env:INPUT_EXTRA_ALLOWLIST)) {
-          $extraTokens = $env:INPUT_EXTRA_ALLOWLIST -split "[`n,]" |
-            ForEach-Object { $_.Trim() } |
-            Where-Object { $_ -ne '' }
-        }
+        $pathDirs = ($env:Path -split ';') | Where-Object { $_ -ne '' }
+        $visited = @{}
 
-        $allowList = @{}
-        foreach ($name in ($builtinAllowList + $extraTokens)) {
-          $key = ($name.ToLowerInvariant())
-          if (-not $key.EndsWith('.dll')) { $key = "$key.dll" }
-          $allowList[$key] = $true
-        }
-
-        $pathDirs = @()
-        $pathVar = $env:Path
-        if (-not [string]::IsNullOrWhiteSpace($pathVar)) {
-          $pathDirs = $pathVar.Split(';') | Where-Object { $_ -ne '' }
-        }
-
-        $copied = @{}     # destination DLL filename (lowercase) -> $true
-        $resolvedCache = @{}
-
+        # Returns the source path to bundle for a DLL named $Name, or $null
+        # when the DLL is a Windows system DLL we deliberately ignore.
+        # Throws when an allow-listed DLL cannot be located on PATH.
         function Resolve-Dll {
           param([string]$Name)
 
-          $key = $Name.ToLowerInvariant()
-          if ($resolvedCache.ContainsKey($key)) {
-            return $resolvedCache[$key]
-          }
+          # A DLL sitting next to the executable is a build product and is
+          # always bundled (it is already in the right place).
+          $local = Join-Path $bundleDir $Name
+          if (Test-Path -LiteralPath $local) { return $local }
 
-          # Prefer a DLL sitting next to the executable: it is a product of the
-          # build itself (e.g. a Swift module) and must always be bundled.
-          $guess = Join-Path $productsDirectory $Name
-          if (Test-Path -LiteralPath $guess) {
-            $resolvedCache[$key] = $guess
-            return $guess
-          }
-
-          if (-not $allowList.ContainsKey($key)) {
-            # Treat as a system DLL we don't want to redistribute.
-            $resolvedCache[$key] = $null
+          if (-not $allowList.ContainsKey($Name.ToLowerInvariant())) {
             return $null
           }
 
           foreach ($dir in $pathDirs) {
             $candidate = Join-Path $dir $Name
-            if (Test-Path -LiteralPath $candidate) {
-              $resolvedCache[$key] = $candidate
-              return $candidate
-            }
+            if (Test-Path -LiteralPath $candidate) { return $candidate }
           }
 
-          $resolvedCache[$key] = ''   # sentinel: known but unresolved
-          return ''
+          throw "Could not locate allow-listed DLL '$Name' on PATH."
         }
 
+        # Returns the list of DLL names imported by $Module.
         function Get-DllDependencies {
           param([string]$Module)
 
@@ -160,82 +98,41 @@ runs:
           if ($LASTEXITCODE -ne 0) {
             throw "dumpbin failed for '$Module' (exit $LASTEXITCODE):`n$output"
           }
-          $text = ($output | Out-String) -split "`r?`n"
-          $heading = '  Image has the following dependencies:'
-          $headingIdx = -1
-          for ($i = 0; $i -lt $text.Length; $i++) {
-            if ($text[$i] -eq $heading) { $headingIdx = $i; break }
-          }
-          if ($headingIdx -lt 0) {
+          $lines = ($output | Out-String) -split "`r?`n"
+          $start = $lines.IndexOf('  Image has the following dependencies:') + 2
+          if ($start -le 1) {
             throw "Could not find dependency section in dumpbin output for '$Module'."
           }
-          $start = $headingIdx + 2
-          $end = $text.Length
-          for ($i = $start; $i -lt $text.Length; $i++) {
-            if ($text[$i].Trim() -eq '') { $end = $i; break }
-          }
-          $deps = @()
-          for ($i = $start; $i -lt $end; $i++) {
-            $name = $text[$i].Trim()
-            if ($name -ne '') { $deps += $name }
-          }
-          return ,$deps
+          $end = $start
+          while ($end -lt $lines.Length -and $lines[$end].Trim() -ne '') { $end++ }
+          return @($lines[$start..($end - 1)] | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
         }
 
-        function Copy-DllRecursively {
+        function Bundle-Recursively {
           param([string]$Module)
 
-          $deps = Get-DllDependencies -Module $Module
-          foreach ($dep in $deps) {
-            $depKey = $dep.ToLowerInvariant()
-            if ($copied.ContainsKey($depKey)) { continue }
+          foreach ($dep in (Get-DllDependencies -Module $Module)) {
+            $key = $dep.ToLowerInvariant()
+            if ($visited.ContainsKey($key)) { continue }
+            $visited[$key] = $true
 
-            $resolved = Resolve-Dll -Name $dep
-            if ($null -eq $resolved) {
-              # Not on allow-list; assumed to be a system DLL.
-              continue
-            }
-            if ($resolved -eq '') {
-              $msg = "Could not locate allow-listed DLL '$dep' on PATH."
-              if ($failOnUnresolved) { throw $msg } else { Write-Warning $msg }
-              continue
-            }
+            $source = Resolve-Dll -Name $dep
+            if ($null -eq $source) { continue }
 
-            $destFile = Join-Path $destination ([System.IO.Path]::GetFileName($resolved))
-            $destFileFull = $destFile
-
-            $alreadyAtDest = $false
-            try {
-              $resolvedFull = (Resolve-Path -LiteralPath $resolved).Path
-              if (Test-Path -LiteralPath $destFile) {
-                $existingFull = (Resolve-Path -LiteralPath $destFile).Path
-                if ($existingFull -ieq $resolvedFull) { $alreadyAtDest = $true }
-              }
-            } catch { }
-
-            if (-not $alreadyAtDest) {
-              if (-not (Test-Path -LiteralPath $destFile)) {
-                Write-Host "Copying $resolved"
-                Copy-Item -LiteralPath $resolved -Destination $destFile -Force
-
-                # Also copy the matching .pdb if it exists alongside the DLL.
-                $pdb = [System.IO.Path]::ChangeExtension($resolved, 'pdb')
-                if (Test-Path -LiteralPath $pdb) {
-                  $destPdb = [System.IO.Path]::ChangeExtension($destFile, 'pdb')
-                  if (-not (Test-Path -LiteralPath $destPdb)) {
-                    Copy-Item -LiteralPath $pdb -Destination $destPdb -Force
-                  }
-                }
+            $dest = Join-Path $bundleDir ([System.IO.Path]::GetFileName($source))
+            if ($source -ine $dest) {
+              Write-Host "Copying $source"
+              Copy-Item -LiteralPath $source -Destination $dest -Force
+              $pdb = [System.IO.Path]::ChangeExtension($source, 'pdb')
+              if (Test-Path -LiteralPath $pdb) {
+                Copy-Item -LiteralPath $pdb -Destination ([System.IO.Path]::ChangeExtension($dest, 'pdb')) -Force
               }
             }
 
-            $copied[$depKey] = $true
-
-            # Recurse so that indirect dependencies are also brought along.
-            Copy-DllRecursively -Module $destFileFull
+            Bundle-Recursively -Module $dest
           }
         }
 
-        Write-Host "Bundling DLLs for $exePath into $destination"
-        Copy-DllRecursively -Module $exePath
-        Write-Host "Done. Copied $($copied.Count) unique DLL(s)."
+        Write-Host "Bundling DLLs for $exePath into $bundleDir"
+        Bundle-Recursively -Module $exePath
+        Write-Host "Done. Visited $($visited.Count) unique DLL reference(s)."
