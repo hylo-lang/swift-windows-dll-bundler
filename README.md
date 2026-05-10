@@ -30,7 +30,7 @@ from `moreSwift/swift-bundler`.
 - `llvm-readobj` must be on `PATH`. It ships with the Swift toolchain on
   Windows, so any action that puts the Swift toolchain on `PATH` (e.g.
   [`SwiftyLab/setup-swift`](https://github.com/SwiftyLab/setup-swift))
-  is sufficient — no Visual Studio Developer environment is required.
+  is sufficient.
 - Tested with Swift 6.3.1. Earlier versions may need a slightly different
   allow-list of DLLs to include. Feel free to fork for your own demands.
 
