@@ -27,6 +27,9 @@ jobs:
         with:
           swift-version: "6.3.1"
 
+      - name: Enter Visual Studio Developer environment
+        uses: compnerd/gha-setup-vsdevenv@main
+
       - name: Build sample
         working-directory: examples/hello
         shell: pwsh

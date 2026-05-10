@@ -27,7 +27,7 @@ from `moreSwift/swift-bundler`.
 ## Requirements
 
 - Windows runner.
-- `dumpbin` (from MSVC) must be on `PATH`. Use
+- `dumpbin` (from MSVC) must be on `PATH`. Use e.g.
   [`compnerd/gha-setup-vsdevenv`](https://github.com/compnerd/gha-setup-vsdevenv)
   earlier in the job to enter a Visual Studio Developer environment.
 
