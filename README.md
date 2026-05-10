@@ -7,7 +7,7 @@ the Visual C++ runtime installed.
 
 The action:
 
-1. Runs `dumpbin /DEPENDENTS` on the executable.
+1. Runs `llvm-readobj --coff-imports` on the executable.
 2. For every dependency:
    - If a DLL of the same name is sitting next to the executable, it is treated
      as a build product and kept.
@@ -27,10 +27,12 @@ from `moreSwift/swift-bundler`.
 ## Requirements
 
 - Windows runner.
-- `dumpbin` (from MSVC) must be on `PATH`. Use e.g.
-  [`compnerd/gha-setup-vsdevenv`](https://github.com/compnerd/gha-setup-vsdevenv)
-  earlier in the job to enter a Visual Studio Developer environment.
-- Tested with Swift 6.3.1. Earlier version may need slightly different set of allowlist for DLLs to include. Feel free to fork for your own demands.
+- `llvm-readobj` must be on `PATH`. It ships with the Swift toolchain on
+  Windows, so any action that puts the Swift toolchain on `PATH` (e.g.
+  [`SwiftyLab/setup-swift`](https://github.com/SwiftyLab/setup-swift))
+  is sufficient — no Visual Studio Developer environment is required.
+- Tested with Swift 6.3.1. Earlier versions may need a slightly different
+  allow-list of DLLs to include. Feel free to fork for your own demands.
 
 ## Inputs
 
@@ -41,8 +43,6 @@ from `moreSwift/swift-bundler`.
 ## Usage
 
 ```yaml
-- uses: compnerd/gha-setup-vsdevenv@main
-
 - uses: SwiftyLab/setup-swift@latest
   with:
     swift-version: "6.3.1"
