@@ -30,6 +30,7 @@ from `moreSwift/swift-bundler`.
 - `dumpbin` (from MSVC) must be on `PATH`. Use e.g.
   [`compnerd/gha-setup-vsdevenv`](https://github.com/compnerd/gha-setup-vsdevenv)
   earlier in the job to enter a Visual Studio Developer environment.
+- Tested with Swift 6.3.1. Earlier version may need slightly different set of allowlist for DLLs to include. Feel free to fork for your own demands.
 
 ## Inputs
 
