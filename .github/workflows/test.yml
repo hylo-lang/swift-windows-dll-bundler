@@ -20,15 +20,12 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Swift
         uses: SwiftyLab/setup-swift@latest
         with:
           swift-version: "6.3.1"
-
-      - name: Enter Visual Studio Developer environment
-        uses: compnerd/gha-setup-vsdevenv@main
 
       - name: Build sample
         working-directory: examples/hello
@@ -58,7 +55,7 @@ jobs:
         run: Get-ChildItem -LiteralPath "${{ steps.stage.outputs.dist }}" | Format-Table Name,Length
 
       - name: Upload bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bundle-${{ matrix.target }}
           path: ${{ steps.stage.outputs.dist }}
@@ -81,7 +78,7 @@ jobs:
 
     steps:
       - name: Download bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: bundle-${{ matrix.target }}
           path: ${{ runner.temp }}/bundle
